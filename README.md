@@ -46,12 +46,20 @@ struct probe_SSL_data_t {
   u32 len;
 };
 
+/* NOTE: this is automatically initialized to 0 */
 BPF_PERCPU_ARRAY(data, struct probe_SSL_data_t, 1);
 
 BPF_PERF_OUTPUT(perf_out_buffer);
 
 int my_callback(struct pt_regs *ctx, ..args..) {
-  struct unix_data_t __data = {0};
+  int key = 0;
+
+  /* Take a reference to the array */
+  struct probe_SSL_data_t *__data = data.lookup(&key);
+
+  /* This check is mandatory */
+  if(!__data) return 0;
+
   ...
 
   perf_out_buffer.perf_submit(ctx, &__data, sizeof(__data));
