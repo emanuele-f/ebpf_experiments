@@ -14,7 +14,7 @@ Usefull References
 - https://github.com/iovisor/bcc/blob/master/docs/reference_guide.md
 - https://github.com/iovisor/bcc/blob/master/tools
 
-General tips
+General Tips
 ------------
 
 - It seems like standard kernel functions cannot be called from eBPF programs.
@@ -29,7 +29,7 @@ General tips
 - If you get `Possibly lost 1 samples`, then you should increase the perf buffer size on the python client:
   `b["perf_out_buffer"].open_perf_buffer(print_even, page_cnt=64)`. page_cnt must be a power of two.
 
-Tip: increase memory
+Tip: Increase Memory
 --------------------
 
 When passing data from kernel to user space (via a `perf_submit`), the 512 B
@@ -65,3 +65,25 @@ int my_callback(struct pt_regs *ctx, ..args..) {
   perf_out_buffer.perf_submit(ctx, &__data, sizeof(__data));
 }
 ```
+
+Interesting Utilities
+---------------------
+
+Here is a list of interesting tools (for me) from the bcc official repo:
+
+  - `cachestat`: information about cache hit/misses
+  - `cpudist.py -L`: histogram showing how threads are scheduled
+  - `execsnoop.py`: traces new process creation (and shows PPID)
+  - `filetop.py -C`: shows the top files accesses
+  - `funccount.py -p 1234 ntopng:*NetworkInterface*`: traces function calls counts
+  - `funclatency.py -p 1234 -F ntopng:*NetworkInterface*`: traces functions duration by function
+  - `killsnoop.py`: traces kill signals
+  - `oomkill.py`: traces processes killed for oom
+  - `opensnoop.py`: traces file open calls by process
+  - `syscount.py -P`: prints syscalls per process
+  - `syscount.py -p 1234 -T 10`: prints top 10 syscalls of a process
+  - `tcpstates.py`: traces TCP connection state changes
+  - `tcptracer.py`: traces TCP connections
+  - `ttysnoop.py /dev/pts/1`: snoops console input/output
+  - `statsnoop.py`: traces stat syscalls
+  - `solisten.py`: traces new TCP listening socket open
