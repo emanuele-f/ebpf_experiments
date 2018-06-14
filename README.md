@@ -13,6 +13,7 @@ Usefull References
 
 - https://github.com/iovisor/bcc/blob/master/docs/reference_guide.md
 - https://github.com/iovisor/bcc/blob/master/tools
+- http://www.brendangregg.com/ebpf.html
 
 General Tips
 ------------
@@ -28,6 +29,7 @@ General Tips
   properly. It's better to explicitly initialize it to 0 via `struct some_struct my_map_value = {0};`.
 - If you get `Possibly lost 1 samples`, then you should increase the perf buffer size on the python client:
   `b["perf_out_buffer"].open_perf_buffer(print_even, page_cnt=64)`. page_cnt must be a power of two.
+- memcpy is replaced by `bpf_probe_read` / `bpf_probe_read_str`. eBPF must be sure that a call does not passes stack boundaries.
 
 Tip: Increase Memory
 --------------------
@@ -76,6 +78,8 @@ Here is a list of interesting tools (for me) from the bcc official repo:
   - `execsnoop.py`: traces new process creation (and shows PPID)
   - `filetop.py -C`: shows the top files accesses
   - `funccount.py -p 1234 ntopng:*NetworkInterface*`: traces function calls counts
+    - this can be used to trace a new program by running it with gdb after executing `set follow-fork-mode child`.
+      use `pgrep -P $(pgrep gdb)` to get the child PID
   - `funclatency.py -p 1234 -F ntopng:*NetworkInterface*`: traces functions duration by function
   - `killsnoop.py`: traces kill signals
   - `oomkill.py`: traces processes killed for oom
@@ -85,5 +89,6 @@ Here is a list of interesting tools (for me) from the bcc official repo:
   - `tcpstates.py`: traces TCP connection state changes
   - `tcptracer.py`: traces TCP connections
   - `ttysnoop.py /dev/pts/1`: snoops console input/output
+  - `stacksnoop.py -p 1234 vfs_read`: print kernel functions calls stack trace
   - `statsnoop.py`: traces stat syscalls
   - `solisten.py`: traces new TCP listening socket open
