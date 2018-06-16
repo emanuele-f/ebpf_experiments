@@ -41,7 +41,8 @@ struct dns_data_t {
   u32 pid;
   u32 ppid;
   char comm[TASK_COMM_LEN];
-  char query[364];
+  char pcomm[TASK_COMM_LEN];
+  char query[348];
 };
 
 BPF_PERF_OUTPUT(perf_dns_request);
@@ -74,6 +75,7 @@ int getaddrinfo_probe(struct pt_regs *ctx, const char *node, const char *service
   __data.timestamp_ns = bpf_ktime_get_ns();
   __data.pid = pid;
   __data.ppid = task->real_parent->pid;
+  bpf_probe_read_str(&__data.pcomm, sizeof(__data.pcomm), task->real_parent->comm);
 
   bpf_get_current_comm(&__data.comm, sizeof(__data.comm));
 
@@ -98,7 +100,7 @@ b.attach_uprobe(name="c", sym="getaddrinfo", fn_name="getaddrinfo_probe", pid=ar
 
 # define output data structure in Python
 TASK_COMM_LEN = 16  # linux/sched.h
-MAX_BUF_SIZE = 364  # Limited by the BPF stack
+MAX_BUF_SIZE = 348  # Limited by the BPF stack
 
 # Max size of the whole struct: 512 bytes
 class Data(ct.Structure):
@@ -107,6 +109,7 @@ class Data(ct.Structure):
     ("pid", ct.c_uint),
     ("ppid", ct.c_uint),
     ("comm", ct.c_char * TASK_COMM_LEN),
+    ("pcomm", ct.c_char * TASK_COMM_LEN),
     ("query", ct.c_ubyte * MAX_BUF_SIZE),
     ("len", ct.c_uint),
   ]
@@ -123,9 +126,12 @@ def print_event(cpu, data, size):
   query = bytearray(event.query).decode("utf-8").rstrip('\x00')
 
   if not query in exclude:
-    print("[%d(%d) - %s] %s" % (event.pid, event.ppid, event.comm, query))
+    pid_info = "%d [%s]" % (event.pid, bytearray(event.comm).decode("utf-8"))
+    ppid_info = "%d [%s]" % (event.ppid, bytearray(event.pcomm).decode("utf-8"))
+    print("%-25s %-25s %s" % (pid_info, ppid_info, query))
 
 b["perf_dns_request"].open_perf_buffer(print_event)
 
+print("%-25s %-25s %s" % ("PID", "PPID", "Query"))
 while 1:
     b.perf_buffer_poll()
