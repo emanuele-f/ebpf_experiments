@@ -18,6 +18,7 @@ Usefull References
 General Tips
 ------------
 
+- Functions to be hooked in kprobes can be searched into `/proc/kallsyms`.
 - It seems like standard kernel functions cannot be called from eBPF programs.
   You have to access the raw kernel structure fields instead.
 - You can output LLVM compiled eBPF code via the debug option: `BPF(text=prog, debug=12)`.

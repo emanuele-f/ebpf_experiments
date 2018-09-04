@@ -116,7 +116,6 @@ class Data(ct.Structure):
 
 def print_event(cpu, data, size):
   event = ct.cast(data, ct.POINTER(Data)).contents
-  exclude = ("127.0.0.1", "::1")
 
   # Filter events by command
   if args.comm:
@@ -124,11 +123,10 @@ def print_event(cpu, data, size):
       return
 
   query = bytearray(event.query).decode("utf-8").rstrip('\x00')
+  pid_info = "%d [%s]" % (event.pid, bytearray(event.comm).decode("utf-8"))
+  ppid_info = "%d [%s]" % (event.ppid, bytearray(event.pcomm).decode("utf-8"))
 
-  if not query in exclude:
-    pid_info = "%d [%s]" % (event.pid, bytearray(event.comm).decode("utf-8"))
-    ppid_info = "%d [%s]" % (event.ppid, bytearray(event.pcomm).decode("utf-8"))
-    print("%-25s %-25s %s" % (pid_info, ppid_info, query))
+  print("%-25s %-25s %s" % (pid_info, ppid_info, query))
 
 b["perf_dns_request"].open_perf_buffer(print_event)
 

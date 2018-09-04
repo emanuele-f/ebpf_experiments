@@ -6,6 +6,11 @@
 #
 # USAGE: unixsniff.py [-h] [-p PID] [-c COMM]
 #
+# To test, open a terminal window, it will generate DBUS messages on unix sockets.
+# Alternatively, run:
+#   socat - UNIX-LISTEN:/tmp/memcached.sock
+#   socat - UNIX-CONNECT:/tmp/memcached.sock
+#
 # Licensed under the Apache License, Version 2.0 (the "License")
 #
 
@@ -136,14 +141,16 @@ else:
 b = BPF(text=prog)
 
 ### Probes
-b.attach_kprobe(event="sys_read", fn_name="in_sys_read")
+
+# NOTE: use "sys_read" on older kernels
+b.attach_kprobe(event="ksys_read", fn_name="in_sys_read")
 
 # the unix socket relevant functions
 b.attach_kprobe(event="unix_stream_recvmsg", fn_name="in_unix_stream_recvmsg")
 b.attach_kprobe(event="unix_dgram_recvmsg", fn_name="in_unix_stream_recvmsg")
 b.attach_kprobe(event="unix_seqpacket_recvmsg", fn_name="in_unix_stream_recvmsg")
 
-b.attach_kretprobe(event="sys_read", fn_name="out_sys_read")
+b.attach_kretprobe(event="ksys_read", fn_name="out_sys_read")
 ###
 
 # define output data structure in Python
