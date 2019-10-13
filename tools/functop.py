@@ -20,6 +20,7 @@ from bcc import BPF
 import argparse
 from time import sleep
 import signal
+import os
 
 # TODO examples
 examples = """examples:
@@ -55,17 +56,18 @@ def bail(error):
 
 parts = args.pattern.split(':')
 if len(parts) == 1:
-    library = None
     pattern = args.pattern
+    library = os.readlink("/proc/" + str(args.pid) + "/exe")
 elif len(parts) == 2:
     library = parts[0]
-    libpath = BPF.find_library(library) or BPF.find_exe(library)
-    if not libpath:
-        bail("can't resolve library %s" % library)
-    library = libpath
     pattern = parts[1]
 else:
     bail("unrecognized pattern format '%s'" % pattern)
+
+libpath = BPF.find_library(library) or BPF.find_exe(library)
+if not libpath:
+    bail("can't resolve library %s" % library)
+library = libpath
 
 if not args.regexp:
     pattern = pattern.replace('*', '.*')
@@ -264,23 +266,18 @@ def signal_ignore(signal, frame):
 b = BPF(text=bpf_text)
 
 # attach probes
-if not library:
-    b.attach_kprobe(event_re=pattern, fn_name="trace_func_entry")
-    b.attach_kretprobe(event_re=pattern, fn_name="trace_func_return")
-    matched = b.num_open_kprobes()
-else:
-    b.attach_uprobe(name=library, sym_re=pattern, fn_name="trace_func_entry",
-                    pid=args.pid)
-    b.attach_uretprobe(name=library, sym_re=pattern,
-                       fn_name="trace_func_return", pid=args.pid or -1)
-    matched = b.num_open_uprobes()
+b.attach_uprobe(name=library, sym_re=pattern, fn_name="trace_func_entry",
+                pid=args.pid)
+b.attach_uretprobe(name=library, sym_re=pattern,
+                   fn_name="trace_func_return", pid=args.pid or -1)
+matched = b.num_open_uprobes()
 
 if matched == 0:
     print("0 functions matched by \"%s\". Exiting." % args.pattern)
     exit()
 
-print("Tracing %d functions for \"%s\"... Hit Ctrl-C to end." %
-    (matched / 2, args.pattern))
+print("Tracing %d functions from %s for \"%s\"... Hit Ctrl-C to end." %
+    (matched / 2, os.path.basename(libpath), args.pattern))
 
 def formatFn(addr):
     funcname = BPF.sym(addr, args.pid)
