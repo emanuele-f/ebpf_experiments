@@ -1,6 +1,6 @@
 #!/usr/bin/python
 #
-# functop   Determines the most expensive calls.
+# functop   Time functions and print top functions by latency
 #
 # USAGE: functop [-h] [-p PID] [-i INTERVAL] [-r]
 #                    pattern
@@ -12,8 +12,6 @@
 #
 # Copyright (c) 2019 Eamenuele Faranda
 # Licensed under the Apache License, Version 2.0 (the "License")
-# Adapted from funclatency by Brendan Gregg and
-# https://stackoverflow.com/questions/47020119/is-it-possible-to-use-ebpf-or-perf-to-calculate-time-spent-in-individual-traced
 #
 # 13-Oct-2019   Emanuele Faranda       Created this.
 #
@@ -73,18 +71,11 @@ if not args.regexp:
     pattern = pattern.replace('*', '.*')
     pattern = '^' + pattern + '$'
 
-# TODO support nested functions?
+# TODO support recursive functions?
 
 # define BPF program
 bpf_text = """
 #include <uapi/linux/ptrace.h>
-
-typedef struct stats {
-    u64 tot_time;
-    u64 min_time;
-    u64 max_time;
-    u32 count;
-} stats_t;
 
 #ifdef USER_STACKS
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(4,18,0)
@@ -93,98 +84,167 @@ typedef struct stats {
 #endif
 #endif // USER_STACKS
 
+/* ******************************************************* */
+
+typedef struct stats {
+    u64 tot_time;
+    u64 min_time;
+    u64 max_time;
+    u32 count;
+} stats_t;
+
+/* ******************************************************* */
+
 typedef struct stats_key {
-  u64 ip;
+    u64 ip;
 #ifdef USER_STACKS
-  u64 caller_ip;
+    u64 caller_ip;
 #endif
 } stats_key_t;
 
-#ifdef GET_FRAME_FROM_REG
-BPF_HASH(caller_ip, u32);
-#endif
+/* ******************************************************* */
 
-BPF_HASH(start, u32);
-BPF_HASH(ipaddr, u32);
+typedef struct ip_key {
+    u32 pid;
+    u64 ip;
+} ip_key_t;
+
+typedef struct ip_data {
+    u64 start_ns;
+    u64 prev_ip;
+#ifdef GET_FRAME_FROM_REG
+    u64 caller_ip;
+#endif
+} ip_data_t;
+
+/* ******************************************************* */
+
+/* Maps a pid to its most recent function call */
+BPF_HASH(last_ip, u32, u64);
+
+/* Maps a function call to its metadata */
+BPF_HASH(ip_data, ip_key_t, ip_data_t);
+
+/* This is resetted by the python stats.clear() */
 BPF_HASH(stats, stats_key_t, stats_t);
+
+/* ******************************************************* */
 
 int trace_func_entry(struct pt_regs *ctx)
 {
+    ip_key_t key = {0};
+    ip_data_t val;
     u64 pid_tgid = bpf_get_current_pid_tgid();
     u32 pid = pid_tgid;
     u32 tgid = pid_tgid >> 32;
-    u64 ts = bpf_ktime_get_ns();
 
     FILTER
+
     u64 ip = PT_REGS_IP(ctx);
-    ipaddr.update(&pid, &ip);
-    start.update(&pid, &ts);
+    key.pid = pid;
+    key.ip = ip;
+
+#if 0
+    /* Detect recursive/cyclic calls */
+    ip_data_t *cyclic = ip_data.lookup(&key);
+
+    if(unlikely(cyclic)) {
+        /* Cyclic calls are not supported */
+        // TODO avoid anomalous state
+        return(0);
+    }
+#endif
+
+    /* Possibly retrieve last call for this pid which has not returned yet */
+    u64 *lip = last_ip.lookup(&pid);
+    if(lip) {
+        val.prev_ip = *lip;
+        *lip = ip;
+    } else {
+        val.prev_ip = 0;
+        last_ip.update(&pid, &ip);
+    }
 
 #ifdef GET_FRAME_FROM_REG
+    val.caller_ip = 0;
 #ifdef __x86_64
     u64 cip;
 
     if(!bpf_probe_read(&cip, sizeof(cip), (void *)(ctx->sp)))
-       caller_ip.update(&pid, &cip);
+       val.caller_ip = cip;
 #endif
 #endif // GET_FRAME_FROM_REG
+
+    val.start_ns = bpf_ktime_get_ns();
+    ip_data.update(&key, &val);
 
     return 0;
 }
 
+/* ******************************************************* */
+
 int trace_func_return(struct pt_regs *ctx)
 {
-    u64 *tsp, delta;
+    ip_key_t key = {0};
+    stats_key_t stat_k = {0};
+    u64 delta;
     u64 pid_tgid = bpf_get_current_pid_tgid();
     u32 pid = pid_tgid;
     u32 tgid = pid_tgid >> 32;
+    u64 now = bpf_ktime_get_ns();
 
-    // calculate delta time
-    tsp = start.lookup(&pid);
-    if (tsp == 0) {
+    u64 *lip = last_ip.lookup(&pid);
+
+    if(unlikely(!lip))
         return 0;   // missed start
-    }
-    delta = bpf_ktime_get_ns() - *tsp;
-    start.delete(&pid);
 
-    // Microseconds
-    delta /= 1000;
+    u64 ip = *lip;
+    key.pid = pid;
+    key.ip = ip;
 
-    u64 ip, *ipp = ipaddr.lookup(&pid);
-    if (ipp) {
-        ip = *ipp;
-        stats_key_t key;
-        key.ip = ip;
+    ip_data_t *val = ip_data.lookup(&key);
+
+    if(unlikely(!val))
+        return 0;   // should never happen
+
+    delta = now - val->start_ns;
+    delta /= 1000;  // ns -> us
+
+    /* Update stats */
+    stat_k.ip = ip;
 
 #ifdef USER_STACKS
 #ifdef GET_FRAME_FROM_REG
-        u64 *cip = caller_ip.lookup(&pid);
-        key.caller_ip = cip ? *cip : 0;
+    stat_k.caller_ip = val->caller_ip;
 #else
-        u64 user_stack[1] = {0};
-        bpf_get_stack(ctx, user_stack, sizeof(user_stack), BPF_F_USER_STACK);
-        key.caller_ip = user_stack[0];
+    u64 user_stack[1] = {0};
+    bpf_get_stack(ctx, user_stack, sizeof(user_stack), BPF_F_USER_STACK);
+    stat_k.caller_ip = user_stack[0];
 #endif
 #endif // USER_STACKS
 
-        stats_t *s = stats.lookup(&key);
+    stats_t *s = stats.lookup(&stat_k);
 
-        if (s) {
-            s->tot_time += delta;
-            s->count++;
-            if(unlikely(delta < s->min_time)) s->min_time = delta;
-            if(unlikely(delta > s->max_time)) s->max_time = delta;
-        } else {
-            stats_t s = {};
-            s.min_time = delta;
-            s.max_time = delta;
-            s.tot_time = delta;
-            s.count = 1;
-            stats.update(&key, &s);
-        }
-
-        ipaddr.delete(&pid);
+    if (s) {
+        s->tot_time += delta;
+        s->count++;
+        if(unlikely(delta < s->min_time)) s->min_time = delta;
+        if(unlikely(delta > s->max_time)) s->max_time = delta;
+    } else {
+        stats_t s = {};
+        s.min_time = delta;
+        s.max_time = delta;
+        s.tot_time = delta;
+        s.count = 1;
+        stats.update(&stat_k, &s);
     }
+
+    /* Pop last call */
+    if(val->prev_ip)
+        last_ip.update(&pid, &val->prev_ip);
+    else
+        last_ip.delete(&pid);
+    ip_data.delete(&key);
 
     return 0;
 }
