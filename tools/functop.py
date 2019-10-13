@@ -86,12 +86,23 @@ typedef struct stats {
     u32 count;
 } stats_t;
 
+#ifdef USER_STACKS
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,18,0)
+/* bpf_get_stack is missing */
+#define GET_FRAME_FROM_REG
+#endif
+#endif // USER_STACKS
+
 typedef struct stats_key {
   u64 ip;
 #ifdef USER_STACKS
   u64 caller_ip;
 #endif
 } stats_key_t;
+
+#ifdef GET_FRAME_FROM_REG
+BPF_HASH(caller_ip, u32);
+#endif
 
 BPF_HASH(start, u32);
 BPF_HASH(ipaddr, u32);
@@ -108,6 +119,15 @@ int trace_func_entry(struct pt_regs *ctx)
     u64 ip = PT_REGS_IP(ctx);
     ipaddr.update(&pid, &ip);
     start.update(&pid, &ts);
+
+#ifdef GET_FRAME_FROM_REG
+#ifdef __x86_64
+    u64 cip;
+
+    if(!bpf_probe_read(&cip, sizeof(cip), (void *)(ctx->sp)))
+       caller_ip.update(&pid, &cip);
+#endif
+#endif // GET_FRAME_FROM_REG
 
     return 0;
 }
@@ -137,11 +157,15 @@ int trace_func_return(struct pt_regs *ctx)
         key.ip = ip;
 
 #ifdef USER_STACKS
+#ifdef GET_FRAME_FROM_REG
+        u64 *cip = caller_ip.lookup(&pid);
+        key.caller_ip = cip ? *cip : 0;
+#else
         u64 user_stack[1] = {0};
         bpf_get_stack(ctx, user_stack, sizeof(user_stack), BPF_F_USER_STACK);
-
         key.caller_ip = user_stack[0];
 #endif
+#endif // USER_STACKS
 
         stats_t *s = stats.lookup(&key);
 
