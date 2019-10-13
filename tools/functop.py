@@ -27,7 +27,7 @@ import signal
 examples = """examples:
 """
 parser = argparse.ArgumentParser(
-    description="Time functions and print top functions latencies",
+    description="Time functions and print top functions by latency",
     formatter_class=argparse.RawDescriptionHelpFormatter,
     epilog=examples)
 parser.add_argument("-p", "--pid", type=int,
@@ -40,6 +40,8 @@ parser.add_argument("-r", "--regexp", action="store_true",
     help="use regular expressions. Default is \"*\" wildcards only.")
 parser.add_argument("-k", "--topk", type=int,
     help="show the top k slower functions. Default is 15.", default=15)
+parser.add_argument("-c", "--with-caller", action="store_true",
+    help="add caller as part of the function key")
 parser.add_argument("pattern",
     help="search expression for functions")
 args = parser.parse_args()
@@ -71,7 +73,7 @@ if not args.regexp:
     pattern = pattern.replace('*', '.*')
     pattern = '^' + pattern + '$'
 
-# TODO nested functions?
+# TODO support nested functions?
 
 # define BPF program
 bpf_text = """
@@ -84,9 +86,16 @@ typedef struct stats {
     u32 count;
 } stats_t;
 
+typedef struct stats_key {
+  u64 ip;
+#ifdef USER_STACKS
+  u64 caller_ip;
+#endif
+} stats_key_t;
+
 BPF_HASH(start, u32);
 BPF_HASH(ipaddr, u32);
-BPF_HASH(stats, u64, stats_t);
+BPF_HASH(stats, stats_key_t, stats_t);
 
 int trace_func_entry(struct pt_regs *ctx)
 {
@@ -124,7 +133,17 @@ int trace_func_return(struct pt_regs *ctx)
     u64 ip, *ipp = ipaddr.lookup(&pid);
     if (ipp) {
         ip = *ipp;
-        stats_t *s = stats.lookup(&ip);
+        stats_key_t key;
+        key.ip = ip;
+
+#ifdef USER_STACKS
+        u64 user_stack[1] = {0};
+        bpf_get_stack(ctx, user_stack, sizeof(user_stack), BPF_F_USER_STACK);
+
+        key.caller_ip = user_stack[0];
+#endif
+
+        stats_t *s = stats.lookup(&key);
 
         if (s) {
             s->tot_time += delta;
@@ -137,7 +156,7 @@ int trace_func_return(struct pt_regs *ctx)
             s.max_time = delta;
             s.tot_time = delta;
             s.count = 1;
-            stats.update(&ip, &s);
+            stats.update(&key, &s);
         }
 
         ipaddr.delete(&pid);
@@ -149,6 +168,9 @@ int trace_func_return(struct pt_regs *ctx)
 
 bpf_text = bpf_text.replace('FILTER',
     'if (tgid != %d) { return 0; }' % args.pid)
+
+if args.with_caller:
+    bpf_text = "#define USER_STACKS\n" + bpf_text
 
 # signal handler
 def signal_ignore(signal, frame):
@@ -181,7 +203,10 @@ print("Tracing %d functions for \"%s\"... Hit Ctrl-C to end." %
 def print_section(key):
     return BPF.sym(key, args.pid)
 
-col_fmt = "%-45s %16s %8s %8s %8s %8s"
+name_len = 45
+if args.with_caller:
+    name_len += 30
+col_fmt = "%-"+ str(name_len) +"s %16s %8s %8s %8s %8s"
 
 exiting = 0 if args.interval else 1
 seconds = 0
@@ -202,17 +227,39 @@ while (1):
     i = 0
 
     # Collect stats
-    for k, v in sorted(stats.items(), key=lambda kv: kv[1].tot_time, reverse=True):
-        print(col_fmt % (
-            BPF.sym(k, args.pid).decode('UTF-8'),
-            v.tot_time, v.count, v.min_time, "%.2f" % (v.tot_time / v.count), v.max_time
-        ))
+    aggr_stats = {}
+
+    for k, v in stats.items():
+        funcname = BPF.sym(k.ip, args.pid).decode('UTF-8')
+        key = funcname
+
+        if args.with_caller and k.caller_ip:
+            caller_name = BPF.sym(k.caller_ip, args.pid).decode('UTF-8')
+            if caller_name == "[unknown]":
+                caller_name = "0x%x" % k.caller_ip
+
+            key = "[%s] %s" % (caller_name, funcname)
+            prev = aggr_stats.get(key)
+
+            if prev:
+                # The same function can be called multiple times within its parent (different IP)
+                # Merge all the calls together
+                v.count += prev.count
+                v.tot_time += prev.tot_time
+                v.min_time = min(v.min_time, prev.min_time)
+                v.max_time = max(v.max_time, prev.max_time)
+
+        aggr_stats[key] = v
+
+    stats.clear()
+
+    # Print stats
+    for k, v in sorted(aggr_stats.items(), key=lambda kv: kv[1].tot_time, reverse=True):
+        print(col_fmt % (k, v.tot_time, v.count, v.min_time, "%.2f" % (v.tot_time / v.count), v.max_time))
         i += 1
 
         if i >= args.topk:
             break
-
-    stats.clear()
 
     if exiting:
         print("Detaching...")
