@@ -279,13 +279,17 @@ if matched == 0:
     print("0 functions matched by \"%s\". Exiting." % args.pattern)
     exit()
 
-# header
 print("Tracing %d functions for \"%s\"... Hit Ctrl-C to end." %
     (matched / 2, args.pattern))
 
-# output
-def print_section(key):
-    return BPF.sym(key, args.pid)
+def formatFn(addr):
+    funcname = BPF.sym(addr, args.pid)
+
+    if isinstance(funcname, bytes):
+        funcname = funcname.decode('UTF-8')
+    if funcname == "[unknown]":
+        funcname = "0x%x" % addr
+    return(funcname)
 
 name_len = 45
 if args.with_caller:
@@ -314,14 +318,11 @@ while (1):
     aggr_stats = {}
 
     for k, v in stats.items():
-        funcname = BPF.sym(k.ip, args.pid).decode('UTF-8')
+        funcname = formatFn(k.ip)
         key = funcname
 
         if args.with_caller and k.caller_ip:
-            caller_name = BPF.sym(k.caller_ip, args.pid).decode('UTF-8')
-            if caller_name == "[unknown]":
-                caller_name = "0x%x" % k.caller_ip
-
+            caller_name =formatFn(k.caller_ip)
             key = "[%s] %s" % (caller_name, funcname)
             prev = aggr_stats.get(key)
 
